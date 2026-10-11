@@ -2,8 +2,6 @@
 
 **Memory-efficient streaming detection of emerging network threat patterns using Count-Min Sketch**
 
-A DSA case study by Manasa M, B.Tech CSE, Amrita Vishwa Vidyapeetham, Coimbatore.
-
 PulseGuard watches a stream of network packets and flags sources or targets whose traffic is surging, using a fixed amount of memory no matter how many distinct IP addresses appear. The core data structure is the Count-Min Sketch (CMS). An exact hash map and the Space-Saving algorithm are implemented as baselines so the trade-offs can be measured instead of just claimed.
 
 ---
