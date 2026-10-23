@@ -1,0 +1,8 @@
+# one IP per line (blank lines and comments are ignored)
+10.0.0.99
+192.168.1.10
+10.0.0.99
+
+10.0.0.99
+192.168.1.12
+10.0.0.99

@@ -1,0 +1,34 @@
+==============================================================
+                       PULSEGUARD
+==============================================================
+Config: events=10000  CMS=100x3  SS capacity=10 (scan)  threshold=1000
+
+Frequent Candidates (from Space-Saving)
+IP                 SS Count  SS Err  CMS Est   Exact
+10.0.0.99              1996       0     2005    1996
+192.168.1.19            890     889       74      19
+192.168.0.95            890     889       45      12
+192.168.0.238           890     889      108      16
+192.168.1.72            889     888       49      18
+192.168.1.162           889     888      110      13
+192.168.0.1             889     888       92      17
+192.168.1.62            889     888       85      18
+192.168.1.38            889     888       63      16
+192.168.1.106           889     888       62      20
+
+Flagged for Investigation (CMS estimate > threshold)
+10.0.0.99          est. frequency 2005  (exact 1996)
+
+Accuracy
+Precision: 1.00   Recall: 1.00
+CMS max overestimate over all IPs: 150
+
+Memory (data-structure entries)
+Exact counter : 501 entries  (grows with distinct IPs)
+CMS           : 300 counters (fixed)
+Space-Saving  : 10 slots     (fixed)
+
+Processing time (seconds, same stream)
+CMS 0.0405   Space-Saving 0.0185   Exact 0.0022
+==============================================================
+Note: a flag means 'frequent enough to investigate', not a confirmed attack.

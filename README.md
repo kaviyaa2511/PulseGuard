@@ -1,252 +1,102 @@
 # PulseGuard
+**Memory-efficient detection of frequent network patterns using Count-Min Sketch and Space-Saving**
 
-**Memory-efficient streaming detection of emerging network threat patterns using Count-Min Sketch**
+A DSA case study in pure Python (standard library only). It processes a stream of *simulated* network events and finds heavy-hitter source IPs using fixed-size data structures, then compares them against an exact dictionary counter.
+A flag means "frequent enough to investigate", **not** a confirmed attack.
 
-PulseGuard watches a stream of network packets and flags sources or targets whose traffic is surging, using a fixed amount of memory no matter how many distinct IP addresses appear. The core data structure is the Count-Min Sketch (CMS). An exact hash map and the Space-Saving algorithm are implemented as baselines so the trade-offs can be measured instead of just claimed.
+## Problem statement
+An exact counter (one dictionary entry per distinct IP) is accurate, but its memory grows with the number of distinct IPs. PulseGuard processes events one at a time, estimates frequencies in bounded memory (Count-Min Sketch), tracks only `k` frequent candidates (Space-Saving), flags candidates above a threshold, and measures accuracy, time and memory against exact counts.
 
----
-
-## 1. Problem statement
-
-A busy network link can carry millions of packets per minute from hundreds of thousands of distinct IP addresses. Attacks show up as a few keys suddenly becoming very frequent:
-
-| Pattern | What it looks like | Key we count |
-|---|---|---|
-| Volumetric flood | One source sends packets at a very high rate | source IP |
-| Distributed flood (DDoS) | Many sources hit one target | destination IP |
-| Port scan | One source sends many half-open (SYN-only) connection attempts | source IP, SYN-only packets |
-
-The task: detect these patterns **online**, in a **single pass**, with **memory that does not grow with the number of distinct IPs**, and with a known bound on how wrong the answer can be.
-
-## 2. Why exact counting fails
-
-The obvious solution is a `HashMap<IP, count>`. It is exact, but its memory grows linearly with the number of distinct keys. Under a spoofed-source flood the number of distinct keys is exactly what the attacker inflates, so the detector can run out of memory at the moment it is needed most.
-
-CMS trades a small, bounded error for constant memory.
-
-## 3. Count-Min Sketch in brief
-
-A CMS is a `d x w` table of counters with `d` independent hash functions, one per row.
-
-- **Update(x):** for each row `r`, increment `table[r][h_r(x)]`.
-- **Query(x):** return the minimum of `table[r][h_r(x)]` over all rows.
-
-Collisions can only add to a counter, so the estimate never undercounts. With
-
-```
-w = ceil(e / epsilon)        d = ceil(ln(1 / delta))
-```
-
-the guarantee is
-
-```
-true_count(x)  <=  estimate(x)  <=  true_count(x) + epsilon * N     with probability >= 1 - delta
-```
-
-where `N` is the total number of events seen. Example: `epsilon = 0.001`, `delta = 0.01` gives `w = 2719`, `d = 5`, so 13,595 counters (about 54 KB with 4-byte counters) whether the stream has a thousand keys or a hundred million.
-
-Update and query both cost `O(d)`.
-
-## 4. Design
-
-```
-packet stream
-     |
-     v
- parse (src, dst, flags)
-     |
-     +--> CMS keyed by src IP        -> volumetric flood
-     +--> CMS keyed by dst IP        -> distributed flood
-     +--> CMS keyed by src (SYN-only)-> port scan
-                |
-                v
-     ring of time-sliced sketches  ->  candidate heap (top-k)  ->  anomaly check  ->  alerts
-```
-
-### 4.1 Fixing the known weaknesses of CMS
-
-Plain CMS has four weak points. Each one has a specific fix in this project, and each fix is measured in the experiments.
-
-| Weakness | Fix used in PulseGuard |
-|---|---|
-| Cannot list keys, only answer "how often was X seen?" | A small min-heap of at most `k` candidate keys. After every update, if a key's estimate is at least `phi * N_window`, it enters the heap. The smallest entry is evicted when the heap is full. |
-| Overestimates because of collisions | **Conservative update:** compute `m = min over rows + 1`, then raise only the counters that are below `m`. **Safe flagging:** alert only if `estimate - epsilon * N > threshold`, which removes false positives with probability `1 - delta`. |
-| No deletions, so old traffic cannot be removed | **Ring of sub-window sketches.** The window is cut into `m` slices, each with its own CMS. A query sums the live slices. Expiry means resetting the oldest slice. No decrementing needed. |
-| Error is `epsilon * N` regardless of the key, so rare keys are unreliable | Pick `epsilon` from the threshold you care about (`epsilon` about `phi / 10`), so heavy hitters sit far above the noise floor. Rare keys are allowed to be inaccurate because they are not the target. |
-
-Hash flooding (an attacker crafting inputs that collide) is handled by seeded universal hashing: `h(x) = ((a*x + b) mod p) mod w`, with `a` and `b` drawn at random when the process starts.
-
-### 4.2 Detecting "emerging" patterns
-
-Counting totals would only find the biggest historical senders. To catch something new, each slice is compared with the baseline:
-
-```
-baseline(x) = average of estimate(x) over the older slices
-surge(x)    = estimate_in_newest_slice(x) / max(baseline(x), 1)
-```
-
-A key is flagged when it is both frequent (above `phi * N_window`) and surging (`surge(x) >= S`, for example 5).
-
-### 4.3 Core code
-
-```python
-import random
-
-class CMS:
-    def __init__(self, w, d, seed=None):
-        rnd = random.Random(seed)
-        self.w, self.d, self.p = w, d, (1 << 61) - 1
-        self.ab = [(rnd.randrange(1, self.p), rnd.randrange(self.p)) for _ in range(d)]
-        self.t = [[0] * w for _ in range(d)]
-
-    def _idx(self, x):
-        return [((a * x + b) % self.p) % self.w for a, b in self.ab]
-
-    def add(self, x):                      # conservative update
-        idx = self._idx(x)
-        m = min(self.t[r][c] for r, c in enumerate(idx)) + 1
-        for r, c in enumerate(idx):
-            if self.t[r][c] < m:
-                self.t[r][c] = m
-
-    def query(self, x):
-        return min(self.t[r][c] for r, c in enumerate(self._idx(x)))
-```
-
-## 5. Baselines
-
-| Structure | Memory | Update | Notes |
-|---|---|---|---|
-| Exact HashMap | O(distinct keys) | O(1) | Exact answers, unbounded memory |
-| Space-Saving (k counters) | O(k) | O(1) with stream-summary, O(log k) with a heap | Lists top-k directly; error at most `N / k` |
-| Count-Min Sketch (+ heap) | O(w * d + k) | O(d) | Never undercounts; error at most `epsilon * N` |
-
-## 6. Approach, step by step
-
-1. **Define the threat patterns.** Fix three (volumetric, distributed, port scan) and state exactly which key each one counts.
-2. **Generate traffic.** Produce a Zipf-distributed background stream (most IPs rare, a few common) and inject attack bursts from known IPs at known times, so ground truth exists.
-3. **Implement the exact baseline.** A plain dictionary counter. Everything else is judged against it.
-4. **Implement CMS.** Start with the plain version, check the error bound holds on small inputs.
-5. **Add conservative update.** Compare its overestimation against plain CMS.
-6. **Add the candidate heap.** This is what lets CMS report heavy hitters.
-7. **Add time slicing.** Ring of sketches, expiry by reset, surge ratio against baseline.
-8. **Implement Space-Saving.** Used only as a comparison point.
-9. **Run the experiments** in section 7 and record the numbers.
-10. **Analyse and write up.** Compare measured error with the theoretical bound, discuss where the design fails.
-
-## 7. Experiments
-
-Run each at 10^5, 10^6 and 10^7 events.
-
-1. **Memory:** exact HashMap vs Space-Saving vs CMS.
-2. **Accuracy:** mean relative error and false-positive rate of CMS across several `(epsilon, delta)` settings. Also plain vs conservative update.
-3. **Error by rank:** relative error plotted against key frequency rank, to show heavy hitters are accurate and rare keys are not.
-4. **Throughput:** updates per second for each structure.
-5. **Detection quality:** precision and recall against the injected attackers, for plain, conservative, and safe-threshold flagging.
-6. **Window sensitivity:** detection delay as the slice length and number of slices change.
-
-### Results
-
-Measured on this code (pure Python 3.12, synthetic Zipf traffic, `delta = 0.01`). Rerun the scripts to reproduce; CSVs and plots land in `results/`.
-
-**Memory** (`benchmarks/memory.py`; CMS at `epsilon = 0.001`, Space-Saving with `k = 1000`; `--big` adds 10^7 events)
-
-| Events | Distinct keys | HashMap | Space-Saving | CMS |
-|---|---|---|---|---|
-| 10^5 | 40,114 | 3,473 KB | 126 KB | 53 KB |
-| 10^6 | 391,249 | 41,876 KB | 126 KB | 53 KB |
-
-HashMap memory grows with distinct keys. CMS and Space-Saving stay flat.
-
-**Accuracy** (`benchmarks/accuracy.py`, 300,000 events, heavy threshold 0.5% of the stream)
-
-| epsilon | Variant | Table size | Mean overestimate | Worst-case bound `eps*N` | Keys beyond bound | Top-100 relative error |
-|---|---|---|---|---|---|---|
-| 0.01 | plain | 5 KB | 794.0 | 2998 | 0.00% | 2.31 |
-| 0.01 | conservative | 5 KB | 399.8 | 2998 | 0.00% | 0.37 |
-| 0.003 | plain | 17 KB | 212.0 | 899 | 0.00% | 0.57 |
-| 0.003 | conservative | 17 KB | 114.7 | 899 | 0.00% | 0.0006 |
-| 0.001 | plain | 53 KB | 50.3 | 300 | 0.00% | 0.15 |
-| 0.001 | conservative | 53 KB | 26.8 | 300 | 0.00% | 0.00 |
-
-Conservative update roughly halves the average overestimate and nearly removes it for the heaviest keys. The measured error sits well below the worst-case bound. `results/error_by_rank.png` shows relative error by key rank.
-
-**Throughput** (`benchmarks/throughput.py`, 100,000 updates)
-
-| Structure | Updates per second |
-|---|---|
-| Exact HashMap | 1,214,283 |
-| Space-Saving (k=1000) | 749,297 |
-| CMS plain | 261,594 |
-| CMS conservative | 276,311 |
-
-In pure Python the built-in dict is the fastest, because it is implemented in C while the sketch's hashing runs in the interpreter. CMS wins on memory and on bounded behaviour, not on raw speed here. A C or NumPy implementation would change the ranking.
-
-**Detection** (`benchmarks/detection.py`, 400,000 packets, three attacks, slice = 10,000 packets)
-
-| epsilon | Mode | Precision | Recall | False alarms |
-|---|---|---|---|---|
-| 0.03 | plain / conservative, no safe flagging | 1.00 | 1.00 | 0 |
-| 0.03 | conservative + safe flagging | 1.00 | 0.67 | 0 |
-| 0.02, 0.01, 0.001 | every mode | 1.00 | 1.00 | 0 |
-
-With a reasonable `epsilon` every mode caught all three attacks with no false alarms, mostly because the surge check removes steady heavy hitters. Safe flagging only matters when `epsilon * N` approaches the alert threshold: there it keeps its no-false-positive guarantee but starts missing the weaker attack. Window length has little effect on delay until the slice gets large: at 40,000 packets per slice the weakest attack is missed (recall 0.67).
-
-## 8. Repository layout
-
-```
-PulseGuard/
-├── pulseguard/
-│   ├── cms.py            # Count-Min Sketch (plain + conservative, seeded hashing)
-│   ├── windowed.py       # ring of sub-window sketches
-│   ├── space_saving.py   # baseline
-│   ├── exact.py          # baseline
-│   ├── detector.py       # trackers, candidate set, surge check, scoring
-│   └── traffic.py        # Zipf traffic and attack injection
-├── benchmarks/
-│   ├── memory.py
-│   ├── accuracy.py
-│   ├── throughput.py
-│   └── detection.py
-├── results/              # CSVs and plots written by the benchmarks
-├── demo.py               # step-by-step walkthrough of the whole idea
-├── requirements.txt
-└── README.md
-```
-
-## 9. How to run
-
+## Quick start
 ```bash
-git clone https://github.com/<your-username>/PulseGuard.git
-cd PulseGuard
-pip install -r requirements.txt
+python -m unittest                     # 42 tests
+python main.py                         # simulated stream (10,000 events)
+python main.py --scenario              # the 20-event worked example
+python main.py --heap --capacity 20    # heap-based Space-Saving
+python main.py --input sample_input.txt --threshold 2 --truth 10.0.0.99
+python main.py --ips "a,b,a,a,c" --capacity 2 --threshold 1
+cat ips.txt | python main.py --input - # read stdin
+python -m experiments.exp_cms          # also exp_space_saving, exp_memory, exp_threshold
+```
+Options: `--events --attack-ratio --normal-ips --attacker --seed --width --depth --capacity --threshold --heap --input --ips --truth --scenario`. If `--threshold` is omitted it defaults to 10% of the stream length. Invalid parameters print a clear `Error:` and exit with code 2.
 
-python demo.py                       # narrated walkthrough, about 10 seconds
-python benchmarks/memory.py          # add --big for 10^7 events
-python benchmarks/accuracy.py 300000
-python benchmarks/throughput.py 100000
-python benchmarks/detection.py
+## Structure and owners
+| File | What | Owner |
+|---|---|---|
+| `algorithms/count_min_sketch.py` | Count-Min Sketch | Y |
+| `algorithms/space_saving.py` | Space-Saving (scan + heap) | K |
+| `algorithms/exact_counter.py`, `simulation/event_generator.py` | Exact counter, seeded event generator | M |
+| `detection/detector.py`, `main.py` | Detector, top-k, precision/recall, driver | R |
+| `experiments/exp_*.py` | One experiment each (Y: cms, K: space_saving, M: memory, R: threshold) | each |
+| `tests/` | `test_cms`, `test_ss`, `test_exact`+`test_generator`, `test_detector`+`test_integration` | each |
+
+## Data flow
+```
+generate_events / file / --ips  ->  one IP at a time
+        |-> CountMinSketch.update   (fixed w x d counters)
+        |-> SpaceSaving.update      (k candidates: count, error)
+        |-> ExactCounter.update     (reference, O(u))
+SpaceSaving.candidates() -> detect(): CMS estimate > threshold -> flagged -> evaluate() vs ground truth
 ```
 
-## 10. Limitations
+## Data structure justification
+| Need | Chosen | Rejected alternatives and why |
+|---|---|---|
+| Count every IP in fixed memory | Count-Min Sketch (2D array) | Dict: O(u) memory. Sorted array: O(n) insert. BST: O(log u) time and O(u) space. |
+| Know *which* IPs are heavy | Space-Saving | CMS cannot list items. Keep-all-and-sort needs O(u) memory. |
+| Ground truth | Hash map | Direct-address array: IPs are sparse strings. |
 
-- CMS overestimates. Safe flagging reduces false positives but increases detection delay.
-- Heavy-hitter accuracy depends on choosing `epsilon` well relative to the threshold.
-- Port scan detection here relies on SYN-only counting as a proxy. True distinct-port counting would need a different structure such as HyperLogLog.
-- The sketch is pure Python, so absolute throughput is low. Compare the structures with each other, not with production tools.
-- The `epsilon * N` bound is a worst case. Measured error was far below it, so safe flagging is more cautious than it needs to be on this data.
-- Evaluation uses synthetic traffic. Real traces (CICIDS2017, a CAIDA sample) would be a stronger test.
-- The sliced window is coarse: an event can stay in the estimate for up to one slice length after it should have expired.
+Price paid: CMS may overestimate; Space-Saving counts are upper bounds with a recorded error.
 
-## 11. Future work
+## Implementation choices
+- **CMS: array-based** (list of lists): O(1) indexing, fixed size, no pointers. Seeded `md5` rather than built-in `hash()` (randomised per run, so irreproducible). Trade-off: md5 is slower than a dict update (see experiment).
+- **Space-Saving: dict + min search.** Scan is simple (O(k) eviction). Heap with lazy deletion gives O(log k) amortised eviction; the heap is rebuilt when it exceeds `4k+4` entries so it stays O(k). The textbook Stream-Summary (doubly linked buckets) gives O(1) but is pointer-heavy and error-prone, so it was not built. Both versions break ties by earliest insertion and give identical output (tested).
+- **Exact counter: dict**, expected O(1).
+- **Detector:** `sorted` O(n log n) vs `heapq.nlargest` O(n log k) for top-k; for small k the difference is negligible.
 
-- Evaluate on a real packet trace.
-- Merge sketches from several sensors, since CMS tables add cell by cell.
-- Add HyperLogLog for distinct-count based scan detection.
-- Replace fixed thresholds with ones learned from the baseline.
+## Complexity
+`N` events, `u` distinct IPs, `w` width, `d` depth, `k` capacity.
+| Operation | Time | Space |
+|---|---|---|
+| CMS update / estimate | O(d) | O(wd) total |
+| Exact update / query | O(1) expected (O(u) worst case) | O(u) |
+| Space-Saving hit | O(1) | O(k) |
+| Space-Saving eviction, scan / heap | O(k) / O(log k) amortised | O(k) |
+| Whole stream: CMS / SS-scan / SS-heap / exact | O(Nd) / O(Nk) / O(N log k) / O(N) expected | |
+| detect (k candidates, each a CMS query) | O(kd) | O(k) |
+| top_k: sort / heap | O(k log k) / O(k log m) | |
 
-## 12. References
+Why: each CMS operation does exactly one hash and one array access per row, d rows. Space-Saving does one dict probe per event, plus a minimum search only on eviction.
+Guarantee: with `w = ceil(e/eps)`, `d = ceil(ln(1/delta))`, estimate <= true + eps*N with probability >= 1 - delta. Space-Saving: `count - error <= true <= count`, and the counts always sum to N.
 
-1. G. Cormode and S. Muthukrishnan, "An improved data stream summary: the count-min sketch and its applications", *Journal of Algorithms*, 2005.
-2. A. Metwally, D. Agrawal and A. El Abbadi, "Efficient computation of frequent and top-k elements in data streams", *ICDT*, 2005.
-3. C. Estan and G. Varghese, "New directions in traffic measurement and accounting", *SIGCOMM*, 2002 (origin of conservative update).
+## Edge cases handled (all covered by tests)
+empty stream, single event, all one IP, all distinct IPs, stream shorter than `k`, threshold 0, threshold above every count, blank/extra-space/comment lines, width 1, capacity 1, invalid width/depth/capacity/threshold, missing input file.
+
+## Sample output (`python main.py --scenario`, real run)
+```
+Frequent Candidates (from Space-Saving)
+IP                 SS Count  SS Err  CMS Est   Exact
+10.0.0.99                10       0       11      10
+192.168.1.15              5       4        2       2
+192.168.1.12              5       4        3       3
+
+Flagged for Investigation (CMS estimate > threshold)
+10.0.0.99          est. frequency 11  (exact 10)
+Precision: 1.00   Recall: 1.00
+```
+More outputs and all experiment tables are in `results/`.
+
+## Observed results (from `results/`, run on one machine; timings vary)
+- **CMS error** falls as width grows (20,000 events, 2,000 IPs: avg overestimate 293 at w=50,d=2 down to 51 at w=200,d=5). It never underestimated in any run.
+- **Space-Saving** kept the attacker at every capacity tested (5 to 50). Error bounds shrink as `k` grows. Scan vs heap on an all-distinct stream: 1.9x faster at k=10, 80x at k=1000.
+- **Memory:** exact counter allocated ~15 MB at 500,000 distinct IPs; CMS stayed at ~12 KiB and Space-Saving at ~2 KiB. CMS counters are bounded, not literally constant, because Python allocates larger int objects as counts exceed 256. CMS was *slower* than the dictionary in time (md5 hashing), so its advantage is memory, not speed.
+- **Threshold:** with a narrow sketch (width 20) many normal IPs were falsely flagged at low thresholds (precision 0.10); with width 2000 only the attacker was flagged. A threshold above the attacker's count gives recall 0.
+
+## Limitations
+Simulated data only; tracks source IP only (no time windows, so it finds *frequent* patterns, not "emerging" ones); tracemalloc figures exclude the shared IP strings; not an intrusion-detection product.
+
+## Viva quick answers
+- *Why min across rows?* Collisions only add to counters, so the smallest is closest to the truth and still >= it.
+- *Why start the new Space-Saving item at min+1?* The evicted item may have had up to `min` occurrences the new item could inherit; this keeps the counts an upper bound and the sum equal to N.
+- *Why combine both?* CMS cannot list items; Space-Saving's counts are loose. Space-Saving proposes, CMS refines.
+- *Why does a flag not prove an attack?* Busy legitimate sources are also frequent.
