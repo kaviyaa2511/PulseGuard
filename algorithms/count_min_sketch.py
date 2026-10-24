@@ -4,7 +4,7 @@ Structure : depth x width matrix of integer counters (array-based).
 Update    : hash the item once per row, increment one counter per row  -> O(d)
 Estimate  : minimum of the d counters the item maps to                 -> O(d)
 Space     : O(w * d), independent of the number of distinct items.
-Speed     : O(1) per update/estimate, independent of the number of distinct items.  
+Speed     : O(d) counter operations per update/estimate, independent of the number of distinct items.
 The estimate is never below the true count (counters only grow, and collisions
 only add to them) but may be above it.
 """
