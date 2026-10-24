@@ -135,7 +135,7 @@ class LiveEventGenerator:
     _BASE = int(ipaddress.IPv4Address("172.16.0.1"))
 
     def __init__(self, seed=1, min_batch=5, max_batch=10, attacker_ip="10.0.0.99",
-                 attack_ratio=0.2, new_ip_ratio=0.3, interval_seconds=60):
+                 attack_ratio=0.2, new_ip_ratio=0.3, interval_seconds=10):
         if not all(isinstance(v, int) and not isinstance(v, bool)
                    for v in (min_batch, max_batch)):
             raise ValueError("min_batch and max_batch must be integers")
