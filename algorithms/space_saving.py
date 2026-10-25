@@ -31,10 +31,9 @@ class SpaceSaving:
     def __len__(self):
         return len(self._table)
 
-    # ---- heap helpers -------------------------------------------------
+   
     def _push(self, item, entry):
-        heapq.heappush(self._heap, (entry[0], entry[2], item))
-        # lazy deletion leaves stale entries; rebuild so the heap stays O(k)
+        heapq.heappush(self._heap, (entry[0], entry[2], item))       
         if len(self._heap) > 4 * self.capacity + 4:
             self._heap = [(e[0], e[2], it) for it, e in self._table.items()]
             heapq.heapify(self._heap)
@@ -44,11 +43,10 @@ class SpaceSaving:
             count, seq, item = heapq.heappop(self._heap)
             e = self._table.get(item)
             if e is not None and e[2] == seq and e[0] == count:
-                return item, count  # valid (non-stale) entry
+                return item, count  
 
     def _min_scan(self):
-        # dict preserves insertion order, so min() returns the earliest-inserted
-        # entry among ties.
+        
         victim = min(self._table, key=lambda k: self._table[k][0])
         return victim, self._table[victim][0]
 
@@ -59,7 +57,7 @@ class SpaceSaving:
         if self.use_heap:
             self._push(item, entry)
 
-    # ---- public API ---------------------------------------------------
+   
     def update(self, item):
         item = str(item)
         self.processed += 1
@@ -80,3 +78,14 @@ class SpaceSaving:
         """List of (item, count, error), highest count first."""
         rows = [(k, v[0], v[1]) for k, v in self._table.items()]
         return sorted(rows, key=lambda r: r[1], reverse=True)
+    
+    def get_candidate(self, item):
+        """Return (estimated_count, error) for a tracked item, or None."""
+        item = str(item)
+        entry = self._table.get(item)
+
+        if entry is None:
+            return None
+
+        return entry[0], entry[1]
+

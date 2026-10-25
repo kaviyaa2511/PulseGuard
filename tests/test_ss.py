@@ -74,6 +74,31 @@ class TestSpaceSaving(unittest.TestCase):
             s.update(ch)
         self.assertEqual(s.candidates(), [("A", 10, 0), ("D", 5, 4), ("C", 5, 4)])
 
+    def test_get_candidate_returns_count_and_error(self):
+        s = SpaceSaving(2)
+        s.update("A")
+        s.update("A")
+        s.update("B")
+
+        self.assertEqual(s.get_candidate("A"), (2, 0))
+        self.assertEqual(s.get_candidate("B"), (1, 0))
+
+    def test_get_candidate_returns_none_for_untracked_item(self):
+        s = SpaceSaving(2)
+        s.update("A")
+
+        self.assertIsNone(s.get_candidate("Z"))
+
+    def test_get_candidate_after_eviction(self):
+        s = SpaceSaving(2)
+
+        for item in ["A", "A", "A", "B", "C"]:
+            s.update(item)
+
+        self.assertIsNone(s.get_candidate("B"))
+        self.assertEqual(s.get_candidate("C"), (2, 1))
+
+
 
 if __name__ == "__main__":
     unittest.main()
