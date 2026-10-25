@@ -23,14 +23,14 @@ python -m experiments.exp_cms          # also exp_space_saving, exp_memory, exp_
 Options: `--events --attack-ratio --normal-ips --attacker --seed --width --depth --capacity --threshold --heap --input --ips --truth --scenario --live --demo --interval --batches`. If `--threshold` is omitted it defaults to 10% of the stream length (live mode: see below). Invalid parameters print a clear `Error:` and exit with code 2.
 
 ## Structure and owners
-| File | What | Owner |
+| File | What |
 |---|---|---|
-| `algorithms/count_min_sketch.py` | Count-Min Sketch | Y |
-| `algorithms/space_saving.py` | Space-Saving (scan + heap) | K |
-| `algorithms/exact_counter.py`, `simulation/event_generator.py` | Exact counter, seeded event generator | M |
-| `detection/detector.py`, `main.py` | Detector, top-k, precision/recall, driver | R |
-| `experiments/exp_*.py` | One experiment each (Y: cms, K: space_saving, M: memory, R: threshold) | each |
-| `tests/` | `test_cms`, `test_ss`, `test_exact`+`test_generator`, `test_detector`+`test_integration`, `test_live` | each |
+| `algorithms/count_min_sketch.py` | Count-Min Sketch |
+| `algorithms/space_saving.py` | Space-Saving (scan + heap) |
+| `algorithms/exact_counter.py`, `simulation/event_generator.py` | Exact counter, seeded event generator |
+| `detection/detector.py`, `main.py` | Detector, top-k, precision/recall, driver |
+| `experiments/exp_*.py` | One experiment each |
+| `tests/` | `test_cms`, `test_ss`, `test_exact`+`test_generator`, `test_detector`+`test_integration`, `test_live` |
 
 Live simulation: Member 3 = `LiveEventGenerator`, `validate_event`, `ExactCounter.update_batch`, `exp_memory`, `results/memory_growth.md`, `test_generator`, `test_exact`. Member 4 = `LiveMonitor`/`run_live` in `main.py`, `tests/test_live.py`, this README section.
 
