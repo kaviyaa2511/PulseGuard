@@ -22,18 +22,6 @@ python -m experiments.exp_cms          # also exp_space_saving, exp_memory, exp_
 ```
 Options: `--events --attack-ratio --normal-ips --attacker --seed --width --depth --capacity --threshold --heap --input --ips --truth --scenario --live --demo --interval --batches`. If `--threshold` is omitted it defaults to 10% of the stream length (live mode: see below). Invalid parameters print a clear `Error:` and exit with code 2.
 
-## Structure and owners
-| File | What |
-|---|---|---|
-| `algorithms/count_min_sketch.py` | Count-Min Sketch |
-| `algorithms/space_saving.py` | Space-Saving (scan + heap) |
-| `algorithms/exact_counter.py`, `simulation/event_generator.py` | Exact counter, seeded event generator |
-| `detection/detector.py`, `main.py` | Detector, top-k, precision/recall, driver |
-| `experiments/exp_*.py` | One experiment each |
-| `tests/` | `test_cms`, `test_ss`, `test_exact`+`test_generator`, `test_detector`+`test_integration`, `test_live` |
-
-Live simulation: Member 3 = `LiveEventGenerator`, `validate_event`, `ExactCounter.update_batch`, `exp_memory`, `results/memory_growth.md`, `test_generator`, `test_exact`. Member 4 = `LiveMonitor`/`run_live` in `main.py`, `tests/test_live.py`, this README section.
-
 ## Live simulation (new)
 A batch of 5-10 **simulated** events is generated every `interval` seconds (60 normally, 5 for the demo). Each batch mixes new IPs with IPs seen in earlier batches. The same batch goes through the Exact Counter, Count-Min Sketch and Space-Saving; detection runs after every batch. The three structures are created once and never reset, so counts accumulate for the whole run. No real network traffic is captured and nothing beyond the standard library is used.
 
